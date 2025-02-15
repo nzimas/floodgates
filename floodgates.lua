@@ -1,17 +1,34 @@
--- FLOODGATES (no mid-note gating) + Random Seek
--- 7-voice Arpeggiated Granular Synth by @nzimas
+-- FLOODGATES 
+-- 7-voice Granular Arppegiated Synth
+-- by @nzimas
 
 engine.name = "Glut"
 local MusicUtil = require "musicutil"
 
 -------------------------
--- GLOBAL CONST
+-- GLOBAL
 -------------------------
 local NUM_VOICES   = 7
 local SQUARE_SIZE  = 20
+
+-- We store separate metros for random-seek logic
+local random_seek_metros = {}
+
+-- For drawing 7 squares: 4 top, 3 bottom
+local positions = {
+  {x=10,  y=10},  -- voice 1
+  {x=40,  y=10},  -- voice 2
+  {x=70,  y=10},  -- voice 3
+  {x=100, y=10},  -- voice 4
+  {x=25,  y=40},  -- voice 5
+  {x=55,  y=40},  -- voice 6
+  {x=85,  y=40},  -- voice 7
+}
+
 local RATE_OPTIONS = {
   "16/1","8/1","4/1","2/1","1","1/2","1/4","1/8","1/16"
 }
+
 local SCALE_NAMES = { "Dorian","Natural Minor","Harmonic Minor","Blues","Major" }
 local SCALE_INTERVALS = {
   ["Dorian"]         = {0,2,3,5,7,9,10},
@@ -20,21 +37,10 @@ local SCALE_INTERVALS = {
   ["Blues"]          = {0,3,5,6,7,10},
   ["Major"]          = {0,2,4,5,7,9,11},
 }
-local NOTE_NAMES    = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"}
-
--- Screen squares
-local positions = {
-  {x=10,y=10},   -- voice 1
-  {x=40,y=10},   -- voice 2
-  {x=70,y=10},   -- voice 3
-  {x=100,y=10},  -- voice 4
-  {x=25,y=40},   -- voice 5
-  {x=55,y=40},   -- voice 6
-  {x=85,y=40},   -- voice 7
-}
+local NOTE_NAMES = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"}
 
 -------------------------
--- VOICE STATE
+-- VOICES
 -------------------------
 local voices = {}
 for i=1, NUM_VOICES do
@@ -47,11 +53,8 @@ for i=1, NUM_VOICES do
   }
 end
 
--- We'll store separate metros for random seek
-local random_seek_metros = {}
-
 -------------------------
--- RANDOM
+-- RANDOM HELPERS
 -------------------------
 local function random_float(low, high)
   return low + math.random()*(high - low)
@@ -61,23 +64,20 @@ local function random_int(low, high)
 end
 
 -------------------------
--- FILE BROWSER / SAMPLES
+-- get_random_sample()?
 -------------------------
--- If you want to randomly pick from a directory, define get_random_sample().
--- Placeholder example:
+-- If you want random sample from a folder, define the logic here.
 local function get_random_sample()
-  -- If you do want random sample loading from your sample_dir, implement it here.
-  -- e.g. if you stored the file listing in a table. For now, returns "" meaning no random file loaded.
   return ""
 end
 
 -------------------------
--- SCALE & CHORD
+-- BUILD SCALE / CHORD
 -------------------------
 local function build_scale_notes()
   local root_index = params:get("key") - 1
   local root_midi  = 60 + root_index
-  local scale_name = SCALE_NAMES[params:get("scale")]
+  local scale_name = SCALE_NAMES[ params:get("scale") ]
   local intervals  = SCALE_INTERVALS[scale_name]
   local notes = {}
   for octave=-1,6 do
@@ -91,12 +91,12 @@ local function build_scale_notes()
 end
 
 local function generate_chord(voice_idx, triggered_note)
-  local num_notes   = params:get(voice_idx.."num_notes")
-  local spread      = params:get(voice_idx.."arp_spread")
+  local num_notes = params:get(voice_idx.."num_notes")
+  local spread    = params:get(voice_idx.."arp_spread")
   local scale_notes = build_scale_notes()
   local chord_tones = { triggered_note }
-  local valid_tones = {}
 
+  local valid_tones = {}
   for _,n in ipairs(scale_notes) do
     local diff = n - triggered_note
     if diff >= -(spread*12) and diff <= (spread*12) then
@@ -104,9 +104,10 @@ local function generate_chord(voice_idx, triggered_note)
     end
   end
   table.sort(valid_tones)
+
   local pruned = {}
   for _,v in ipairs(valid_tones) do
-    if v ~= triggered_note then table.insert(pruned, v) end
+    if v ~= triggered_note then table.insert(pruned,v) end
   end
   for _=1,(num_notes-1) do
     if #pruned<1 then break end
@@ -119,13 +120,13 @@ local function generate_chord(voice_idx, triggered_note)
 end
 
 -------------------------
--- GRAIN RANDOMIZE
+-- GRAIN RANDOM
 -------------------------
 local function smooth_transition(param_name, new_val, duration)
   clock.run(function()
     local start_val = params:get(param_name)
     local steps = 20
-    local dt    = duration/steps
+    local dt = duration / steps
     for s=1, steps do
       local t = s/steps
       params:set(param_name, start_val + (new_val - start_val)*t)
@@ -136,16 +137,16 @@ local function smooth_transition(param_name, new_val, duration)
 end
 
 local function randomize_voice_grains(i)
-  local morph_time = params:get("morph_time") / 1000.0
+  local morph = params:get("morph_time") / 1000.0
   local size    = random_float(params:get("grain_min_size"),    params:get("grain_max_size"))
   local density = random_float(params:get("grain_min_density"), params:get("grain_max_density"))
   local spread  = random_float(params:get("grain_min_spread"),  params:get("grain_max_spread"))
   local jitter  = random_float(params:get("grain_min_jitter"),  params:get("grain_max_jitter"))
 
-  smooth_transition(i.."size",    size,    morph_time)
-  smooth_transition(i.."density", density, morph_time)
-  smooth_transition(i.."spread",  spread,  morph_time)
-  smooth_transition(i.."jitter",  jitter,  morph_time)
+  smooth_transition(i.."size",    size,    morph)
+  smooth_transition(i.."density", density, morph)
+  smooth_transition(i.."spread",  spread,  morph)
+  smooth_transition(i.."jitter",  jitter,  morph)
 end
 
 local function randomize_all_grains()
@@ -157,7 +158,6 @@ end
 -------------------------
 -- RANDOM SEEK
 -------------------------
--- We create a background metro that jumps to random positions in the sample
 local function random_seek_tick(voice_idx)
   local pos = math.random()  -- 0..1
   engine.seek(voice_idx, pos)
@@ -168,28 +168,26 @@ local function random_seek_tick(voice_idx)
     tmin = tmax
     tmax = tmp
   end
-  local next_interval = random_int(tmin, tmax) / 1000.0  -- ms -> s
+  local next_interval = math.random(tmin, tmax) / 1000.0
   random_seek_metros[voice_idx].time = next_interval
   random_seek_metros[voice_idx]:start()
 end
 
--- Called whenever the user toggles random_seek param or changes intervals
-local function update_random_seek(voice_idx)
-  local val = params:get(voice_idx.."rnd_seek")
+local function update_random_seek(i)
+  local val = params:get(i.."rnd_seek")
   if val==2 then
-    -- Yes => Start or restart a random seek metro
-    if not random_seek_metros[voice_idx] then
-      random_seek_metros[voice_idx] = metro.init()
-      random_seek_metros[voice_idx].event = function()
-        random_seek_tick(voice_idx)
+    -- yes => start
+    if not random_seek_metros[i] then
+      random_seek_metros[i] = metro.init()
+      random_seek_metros[i].event = function()
+        random_seek_tick(i)
       end
     end
-    -- start right away:
-    random_seek_tick(voice_idx)
+    random_seek_tick(i)  -- immediate
   else
-    -- No => stop
-    if random_seek_metros[voice_idx] then
-      random_seek_metros[voice_idx]:stop()
+    -- no => stop
+    if random_seek_metros[i] then
+      random_seek_metros[i]:stop()
     end
   end
 end
@@ -213,7 +211,7 @@ local function generate_random_rhythm(chord_size, voice_idx)
   local durations = {}
   for i=1,chord_size do
     local factor = random_float(0.7,1.3)
-    durations[i] = factor*base_beats
+    durations[i] = factor * base_beats
   end
   return durations
 end
@@ -231,68 +229,63 @@ end
 -- ARPEGGIO
 -------------------------
 local function run_arpeggio(voice_idx)
-  local chord_tones = voices[voice_idx].chord_tones
-  local chord_size  = #chord_tones
-  local direction   = pick_random_direction()
-  local durations   = generate_random_rhythm(chord_size, voice_idx)
+  local chord   = voices[voice_idx].chord_tones
+  local csize   = #chord
+  local dirMode = pick_random_direction()
+  local durations = generate_random_rhythm(csize, voice_idx)
   local i   = 1
-  local dir = 1
+  local d   = 1
 
-  -- Gate ON
-  engine.gate(voice_idx, 1)
+  engine.gate(voice_idx, 1)  -- no mid-note gating
 
   while voices[voice_idx].active do
     local note
-    if direction=="random" then
-      note = chord_tones[random_int(1,chord_size)]
+    if dirMode=="random" then
+      note = chord[random_int(1,csize)]
     else
-      note = chord_tones[i]
+      note = chord[i]
     end
 
-    -- Possibly randomize grains each chord step
     if params:get(voice_idx.."rnd_grains")==2 then
       randomize_voice_grains(voice_idx)
     end
 
-    -- Possibly random velocity
     if params:get(voice_idx.."rnd_velocity")==2 then
       local vmin = params:get(voice_idx.."min_rnd_vel")
       local vmax = params:get(voice_idx.."max_rnd_vel")
-      local rv   = random_float(vmin, vmax)
-      engine.volume(voice_idx, math.pow(10, rv/20))
+      local rv   = random_float(vmin,vmax)
+      engine.volume(voice_idx, math.pow(10,rv/20))
     else
       local vol_db = params:get(voice_idx.."volume")
-      engine.volume(voice_idx, math.pow(10, vol_db/20))
+      engine.volume(voice_idx, math.pow(10,vol_db/20))
     end
 
-    -- Change pitch
+    -- Pitch
     local ratio = math.pow(2,(note-60)/12)
     engine.pitch(voice_idx, ratio)
 
     -- Wait
-    local spb = clock.get_beat_sec()
-    clock.sleep(durations[i]*spb)
+    clock.sleep(durations[i] * clock.get_beat_sec())
 
-    -- Next note
-    if direction=="up" then
+    -- direction stepping
+    if dirMode=="up" then
       i = i+1
-      if i>chord_size then i=1 end
-    elseif direction=="down" then
+      if i>csize then i=1 end
+    elseif dirMode=="down" then
       i = i-1
-      if i<1 then i=chord_size end
-    elseif direction=="pingpong" then
-      i = i+dir
-      if i>chord_size then
-        i   = chord_size-1
-        dir = -1
+      if i<1 then i=csize end
+    elseif dirMode=="pingpong" then
+      i = i+d
+      if i>csize then
+        i = csize-1
+        d = -1
       elseif i<1 then
-        i   = 2
-        dir = 1
+        i = 2
+        d = 1
       end
     end
   end
 
-  -- Gate OFF
   engine.gate(voice_idx, 0)
 end
 
@@ -307,22 +300,20 @@ local function midi_event(data)
     if msg.vel>0 then
       for i=1, NUM_VOICES do
         if params:get(i.."midi_channel")== msg.ch then
-          -- stop old
           if voices[i].arp_clock then
             clock.cancel(voices[i].arp_clock)
-            voices[i].arp_clock = nil
+            voices[i].arp_clock=nil
           end
           voices[i].active = true
           voices[i].midi_note = msg.note
           voices[i].notes_held[msg.note] = true
-
-          local chord = generate_chord(i, msg.note)
+          local chord = generate_chord(i,msg.note)
           voices[i].chord_tones = chord
 
-          -- Possibly pick sample once
+          -- load sample once
           if params:get(i.."rnd_sample")==2 then
             local path = get_random_sample()
-            if path and path~="" then
+            if path~="" then
               engine.read(i, path)
             end
           else
@@ -338,7 +329,7 @@ local function midi_event(data)
         end
       end
     else
-      -- vel=0 => note_off
+      -- velocity=0 => note_off
       for i=1, NUM_VOICES do
         if params:get(i.."midi_channel")== msg.ch then
           voices[i].notes_held[msg.note] = nil
@@ -369,42 +360,41 @@ local function midi_event(data)
 end
 
 -------------------------
--- KEYS
+-- Norns Keys/Enc
 -------------------------
 function key(n,z)
   if n==2 and z==1 then
     randomize_all_grains()
   end
 end
-
 function enc(n,d)
   -- none
 end
 
 -------------------------
--- SCREEN
+-- DRAW
 -------------------------
+local ui_metro
 function redraw()
   screen.clear()
-  for i=1,NUM_VOICES do
+  for i=1, NUM_VOICES do
     local pos = positions[i]
     screen.level(15)
-    screen.rect(pos.x, pos.y, SQUARE_SIZE, SQUARE_SIZE)
+    screen.rect(pos.x,pos.y,SQUARE_SIZE,SQUARE_SIZE)
     screen.stroke()
     if voices[i].active then
       screen.level(10)
-      screen.rect(pos.x, pos.y, SQUARE_SIZE, SQUARE_SIZE)
+      screen.rect(pos.x,pos.y,SQUARE_SIZE,SQUARE_SIZE)
       screen.fill()
     end
   end
   screen.update()
 end
-
 local function start_redraw_clock()
-  local m = metro.init()
-  m.time = 1/15
-  m.event = redraw
-  m:start()
+  ui_metro = metro.init()
+  ui_metro.time = 1/15
+  ui_metro.event = redraw
+  ui_metro:start()
 end
 
 -------------------------
@@ -415,9 +405,7 @@ local function add_voice_params(i)
 
   params:add_file(i.."base_sample","Base Sample (V"..i..")","")
   params:set_action(i.."base_sample",function(file)
-    if file~="" then
-      engine.read(i,file)
-    end
+    if file~="" then engine.read(i,file) end
   end)
 
   params:add_option(i.."rnd_sample","Randomize Sample (V"..i..")",{"No","Yes"},1)
@@ -441,7 +429,17 @@ local function add_voice_params(i)
     controlspec.new(-60,20,"lin",0.1,0,"dB"))
   params:add_number(i.."midi_channel","MIDI Channel (V"..i..")",1,16,i)
 
-  -- Granular engine
+  -------------------------
+  -- PAN Parameter
+  -------------------------
+  -- Range from -1.0 (left) to +1.0 (right), default=0.0
+  params:add_control(i.."pan","Pan (V"..i..")",
+    controlspec.new(-1, 1, "lin", 0.01, 0, ""))
+  params:set_action(i.."pan",function(val)
+    engine.pan(i, val)
+  end)
+
+  -- Granular controls
   params:add_control(i.."size","Grain size (ms) (V"..i..")",
     controlspec.new(1,500,"lin",1,100,"ms"))
   params:set_action(i.."size",function(val)
@@ -463,39 +461,32 @@ local function add_voice_params(i)
     engine.jitter(i,val/1000)
   end)
 
-  -- NEW: random seek
+  -- Random Seek
   params:add_option(i.."rnd_seek","Randomize seek (V"..i..")",{"No","Yes"},1)
-  params:set_action(i.."rnd_seek",function()
-    update_random_seek(i)
-  end)
+  params:set_action(i.."rnd_seek",function() update_random_seek(i) end)
 
-  params:add_control(i.."rnd_seek_min","Rnd seek min (V"..i..")",
+  params:add_control(i.."rnd_seek_min","Rnd seek min (ms) (V"..i..")",
     controlspec.new(1,5000,"lin",1,500,"ms"))
-  params:set_action(i.."rnd_seek_min",function()
-    update_random_seek(i)
-  end)
+  params:set_action(i.."rnd_seek_min",function() update_random_seek(i) end)
 
-  params:add_control(i.."rnd_seek_max","Rnd seek max (V"..i..")",
+  params:add_control(i.."rnd_seek_max","Rnd seek max (ms) (V"..i..")",
     controlspec.new(1,5000,"lin",1,1500,"ms"))
-  params:set_action(i.."rnd_seek_max",function()
-    update_random_seek(i)
-  end)
+  params:set_action(i.."rnd_seek_max",function() update_random_seek(i) end)
 end
 
 function init_params()
   params:add_separator("Global")
 
   params:add_text("sample_dir","Sample directory","/home/we/dust/audio")
-
   params:add_option("scale","Scale",SCALE_NAMES,1)
   params:add_option("key","Key",NOTE_NAMES,1)
-
+  
   params:add_control("morph_time","Morph time (ms)",
     controlspec.new(0,2000,"lin",10,500,"ms"))
 
   params:add{
-    type="number", id="midi_device", name="MIDI Device",
-    min=1, max=16, default=1,
+    type="number",id="midi_device",name="MIDI Device",
+    min=1,max=16,default=1,
     action=function(value)
       midi_in = midi.connect(value)
       midi_in.event = midi_event
@@ -550,9 +541,8 @@ end
 -------------------------
 function init()
   math.randomseed(os.time())
-  init_params()
 
-  -- set up random_seek metros table
+  init_params()
   for i=1, NUM_VOICES do
     random_seek_metros[i] = nil
     engine.gate(i,0)
