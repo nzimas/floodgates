@@ -1,7 +1,6 @@
 -- FLOODGATES
--- No mid-note gating, concurrency lock & crossfade sample loads,
--- Arpeggio Lock with scale-based transposition,
--- Rate param re-read each chord tone for real-time tempo changes.
+-- 7-voice Arpeggiated Granular Synth
+-- by @nzimas
 
 engine.name = "Glut"
 local MusicUtil = require "musicutil"
