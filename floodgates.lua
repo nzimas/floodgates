@@ -338,6 +338,7 @@ end
 
 local function run_arpeggio(voice_idx)
   local v= voices[voice_idx]
+  v.active = true
   local chord= v.chord_tones
   local csize= #chord
   if csize<1 then
@@ -368,10 +369,17 @@ local function run_arpeggio(voice_idx)
   while v.active do
     local note
     if direction=="random" then
-      note= chord[ random_int(1,csize) ]
+      note = chord[ random_int(1, csize) ]
     else
-      note= chord[i]
+      note = chord[i]
     end
+
+    -- Ensure the UI updates whenever a new note plays
+    local was_active = v.active
+v.active = true
+if not was_active then
+  redraw()  -- Call redraw() only when `active` status actually changes
+end
 
     -- load sample
     if is_first then
@@ -452,8 +460,14 @@ local function midi_event(data)
   if msg.type=="note_on" then
     if msg.vel>0 then
       for i=1, NUM_VOICES do
-        if params:get(i.."midi_channel")== msg.ch then
+        if params:get(i.."midi_channel") == msg.ch and
+   msg.note >= params:get(i.."midi_note_min") and
+   msg.note <= params:get(i.."midi_note_max") then
           local v= voices[i]
+          if not v.active then
+          v.active = true
+          redraw()  -- Force screen update when a voice is activated
+           end
           local locked= (params:get(i.."lock_arpeggio")==2)
 
           if locked then
@@ -498,8 +512,14 @@ local function midi_event(data)
     else
       -- velocity=0 => note_off
       for i=1, NUM_VOICES do
-        if params:get(i.."midi_channel")== msg.ch then
+        if params:get(i.."midi_channel") == msg.ch and
+     msg.note >= params:get(i.."midi_note_min") and
+     msg.note <= params:get(i.."midi_note_max") then
           local v= voices[i]
+          if not v.active then
+        v.active = true
+        redraw()  -- Force screen update when a voice is activated
+           end
           v.notes_held[msg.note]= nil
           local count=0
           for _,val in pairs(v.notes_held) do
@@ -513,7 +533,9 @@ local function midi_event(data)
     end
   elseif msg.type=="note_off" then
     for i=1, NUM_VOICES do
-      if params:get(i.."midi_channel")== msg.ch then
+       if params:get(i.."midi_channel") == msg.ch and
+     msg.note >= params:get(i.."midi_note_min") and
+     msg.note <= params:get(i.."midi_note_max") then
         local v= voices[i]
         v.notes_held[msg.note]= nil
         local count=0
@@ -522,6 +544,7 @@ local function midi_event(data)
         end
         if count==0 then
           v.active= false
+           redraw()
         end
       end
     end
@@ -547,24 +570,25 @@ end
 local ui_metro
 function redraw()
   screen.clear()
-  for i=1,NUM_VOICES do
-    local pos= positions[i]
-    screen.level(15)
-    screen.rect(pos.x,pos.y,SQUARE_SIZE,SQUARE_SIZE)
-    screen.stroke()
+  for i = 1, NUM_VOICES do
+    local pos = positions[i]
     if voices[i].active then
-      screen.level(10)
-      screen.rect(pos.x,pos.y,SQUARE_SIZE,SQUARE_SIZE)
+      screen.level(15)            -- Bright fill for active voice
+      screen.rect(pos.x, pos.y, SQUARE_SIZE, SQUARE_SIZE)
       screen.fill()
+    else
+      screen.level(5)             -- Dim outline for inactive voice
+      screen.rect(pos.x, pos.y, SQUARE_SIZE, SQUARE_SIZE)
+      screen.stroke()
     end
   end
   screen.update()
 end
 
 local function start_redraw_clock()
-  ui_metro= metro.init()
-  ui_metro.time= 1/15
-  ui_metro.event= redraw
+  ui_metro = metro.init()
+  ui_metro.time = 1/15
+  ui_metro.event = redraw
   ui_metro:start()
 end
 
@@ -582,19 +606,17 @@ local function add_voice_params(i)
   end)
 
   params:add_option(i.."rnd_sample","Randomize Sample (V"..i..")",{"No","Yes"},1)
-
-  -- Rate: read each chord tone => real-time changes
-  params:add_option(i.."rate","Rate (V"..i..")",RATE_OPTIONS,5)
+  params:add_option(i.."rate","Arp Rate (V"..i..")",RATE_OPTIONS,5)
 
   -- Lock Arpeggio
   params:add_option(i.."lock_arpeggio","Lock Arpeggio (V"..i..")",{"No","Yes"},1)
 
   params:add_number(i.."num_notes","Number of notes (V"..i..")",1,5,3)
 
-  params:add_control(i.."attack","Attack (ms) (V"..i..")",
-    controlspec.new(0,5000,"lin",1,10,"ms"))
-  params:add_control(i.."release","Release (ms) (V"..i..")",
-    controlspec.new(0,5000,"lin",1,1000,"ms"))
+--  params:add_control(i.."attack","Attack (ms) (V"..i..")",
+--    controlspec.new(0,5000,"lin",1,10,"ms"))
+--    params:add_control(i.."release","Release (ms) (V"..i..")",
+--    controlspec.new(0,5000,"lin",1,1000,"ms"))
 
   params:add_option(i.."rnd_grains","Randomize grains (V"..i..")",{"No","Yes"},1)
   params:add_option(i.."rnd_velocity","Random velocity? (V"..i..")",{"No","Yes"},1)
@@ -609,6 +631,8 @@ local function add_voice_params(i)
     controlspec.new(-60,20,"lin",0.1,0,"dB"))
 
   params:add_number(i.."midi_channel","MIDI Channel (V"..i..")",1,16,i)
+  params:add_number(i.."midi_note_min", "MIDI Note Min (V"..i..")", 0, 127, 0)
+  params:add_number(i.."midi_note_max", "MIDI Note Max (V"..i..")", 0, 127, 127)
 
   params:add_control(i.."pan","Pan (V"..i..")",
     controlspec.new(-1,1,"lin",0.01,0,""))
@@ -647,13 +671,13 @@ local function add_voice_params(i)
     update_random_seek(i)
   end)
 
-  params:add_control(i.."rnd_seek_min","Rnd seek min (ms) (V"..i..")",
+  params:add_control(i.."rnd_seek_min","Rnd seek min (V"..i..")",
     controlspec.new(1,5000,"lin",1,500,"ms"))
   params:set_action(i.."rnd_seek_min",function()
     update_random_seek(i)
   end)
 
-  params:add_control(i.."rnd_seek_max","Rnd seek max (ms) (V"..i..")",
+  params:add_control(i.."rnd_seek_max","Rnd seek max (V"..i..")",
     controlspec.new(1,5000,"lin",1,1500,"ms"))
   params:set_action(i.."rnd_seek_max",function()
     update_random_seek(i)
@@ -688,21 +712,21 @@ function init_params()
   }
 
   params:add_separator("Random Grain Bounds")
-  params:add_control("grain_min_size","Grain size min (ms)",
+  params:add_control("grain_min_size","Size min",
     controlspec.new(1,500,"lin",1,20,"ms"))
-  params:add_control("grain_max_size","Grain size max (ms)",
+  params:add_control("grain_max_size","Size max",
     controlspec.new(1,500,"lin",1,200,"ms"))
-  params:add_control("grain_min_density","Grain density min (hz)",
+  params:add_control("grain_min_density","Density min",
     controlspec.new(0,512,"lin",0.01,1,"hz"))
-  params:add_control("grain_max_density","Grain density max (hz)",
+  params:add_control("grain_max_density","Density max",
     controlspec.new(0,512,"lin",0.01,40,"hz"))
-  params:add_control("grain_min_spread","Grain spread min (%)",
+  params:add_control("grain_min_spread","Spread min",
     controlspec.new(0,100,"lin",1,0,"%"))
-  params:add_control("grain_max_spread","Grain spread max (%)",
+  params:add_control("grain_max_spread","Spread max",
     controlspec.new(0,100,"lin",1,100,"%"))
-  params:add_control("grain_min_jitter","Grain jitter min (ms)",
+  params:add_control("grain_min_jitter","Jitter min",
     controlspec.new(0,2000,"lin",1,0,"ms"))
-  params:add_control("grain_max_jitter","Grain jitter max (ms)",
+  params:add_control("grain_max_jitter","Jitter max",
     controlspec.new(0,2000,"lin",1,500,"ms"))
 
   for i=1, NUM_VOICES do
@@ -745,4 +769,5 @@ function init()
   midi_in.event= midi_event
 
   start_redraw_clock()
+  redraw() 
 end
