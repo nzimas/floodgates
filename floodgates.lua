@@ -1,15 +1,16 @@
--- FLOODGATES 
--- 7-voice Granular Arppegiated Synth
--- by @nzimas
+-- FLOODGATES
+-- No mid-note gating, concurrency lock & crossfade sample loads,
+-- Arpeggio Lock with scale-based transposition,
+-- Rate param re-read each chord tone for real-time tempo changes.
 
 engine.name = "Glut"
 local MusicUtil = require "musicutil"
 
 -------------------------
--- GLOBAL LOCK + CROSSFADE
+-- GLOBAL LOCK & CROSSFADE
 -------------------------
 local loading_lock = false
-local CROSSFADE_MS = 30  -- increase if you still hear subtle clicks
+local CROSSFADE_MS = 30
 
 -------------------------
 -- CONSTANTS
@@ -17,9 +18,11 @@ local CROSSFADE_MS = 30  -- increase if you still hear subtle clicks
 local NUM_VOICES  = 7
 local SQUARE_SIZE = 20
 
+-- If you want to add or reorder these fractions, you can do so
 local RATE_OPTIONS = {
   "16/1","8/1","4/1","2/1","1","1/2","1/4","1/8","1/16"
 }
+
 local SCALE_NAMES = { "Dorian","Natural Minor","Harmonic Minor","Blues","Major" }
 local SCALE_INTERVALS = {
   ["Dorian"]         = {0,2,3,5,7,9,10},
@@ -30,9 +33,9 @@ local SCALE_INTERVALS = {
 }
 local NOTE_NAMES = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"}
 
--- UI squares for 7 voices
+-- For drawing squares
 local positions = {
-  {x=10,y=10},
+  {x=10,y=10},   -- voice 1
   {x=40,y=10},
   {x=70,y=10},
   {x=100,y=10},
@@ -44,8 +47,6 @@ local positions = {
 -------------------------
 -- VOICE STATE
 -------------------------
--- locked_chord, locked_dir, locked_durations, locked_root
--- store the "last chord shape" if lock_arpeggio=Yes
 local voices = {}
 for i=1, NUM_VOICES do
   voices[i] = {
@@ -55,14 +56,14 @@ for i=1, NUM_VOICES do
     notes_held        = {},
     chord_tones       = {},
 
+    -- For locking an arpeggio shape
     locked_chord      = {},
     locked_dir        = nil,
-    locked_durations  = {},
     locked_root       = nil,
+    -- durations array is no longer stored; we re-check "rate" param each chord tone
   }
 end
 
--- random seek metros
 local random_seek_metros = {}
 
 -------------------------
@@ -80,8 +81,8 @@ end
 -------------------------
 local sample_dir = _path.audio
 
-local function file_dir_name(fullpath)
-  return string.match(fullpath,"^(.*)/[^/]*$") or fullpath
+local function file_dir_name(fp)
+  return string.match(fp,"^(.*)/[^/]*$") or fp
 end
 
 local function pick_random_file(dir)
@@ -106,7 +107,7 @@ local function pick_random_file(dir)
 end
 
 -------------------------
--- SCALE / CHORD BUILD
+-- SCALE & CHORD
 -------------------------
 local function build_scale_notes()
   local root_index= params:get("key") - 1
@@ -145,7 +146,6 @@ local function generate_chord(voice_idx, triggered_note)
       table.insert(pruned,v)
     end
   end
-
   for _=1,(num_notes-1) do
     if #pruned<1 then break end
     local idx= random_int(1,#pruned)
@@ -175,7 +175,7 @@ local function scale_transpose(locked_chord, locked_root, new_note)
 
   if not old_root_idx or not new_root_idx then
     -- fallback semitone shift
-    local semis= new_note - locked_root
+    local semis= new_note- locked_root
     local result={}
     for _,c in ipairs(locked_chord) do
       table.insert(result, c+semis)
@@ -194,8 +194,8 @@ local function scale_transpose(locked_chord, locked_root, new_note)
       if new_idx>#scale_array then new_idx=#scale_array end
       table.insert(transposed, scale_array[new_idx])
     else
-      -- fallback semitone for that note
-      local semis= new_note- locked_root
+      -- fallback semitone shift
+      local semis= new_note - locked_root
       table.insert(transposed, c+semis)
     end
   end
@@ -272,7 +272,7 @@ local function update_random_seek(i)
 end
 
 -------------------------
--- CROSSFADE LOAD w/ GLOBAL LOCK
+-- CONCURRENCY LOCK + CROSSFADE
 -------------------------
 local function safe_sample_load(voice_idx, path)
   if path=="" then return end
@@ -299,7 +299,6 @@ local function safe_sample_load(voice_idx, path)
     end
     engine.volume(voice_idx, math.pow(10,-60/20))
 
-    -- read
     engine.read(voice_idx, path)
 
     -- fade in
@@ -311,12 +310,12 @@ local function safe_sample_load(voice_idx, path)
     end
     engine.volume(voice_idx, math.pow(10,user_db/20))
 
-    loading_lock=false
+    loading_lock= false
   end)
 end
 
 -------------------------
--- ARPEGGIO COROUTINE
+-- ARPEGGIO LOOP
 -------------------------
 local function pick_random_direction()
   local r= random_int(1,4)
@@ -327,6 +326,7 @@ local function pick_random_direction()
   end
 end
 
+-- We'll re-check the rate param for each chord tone so user sees real-time changes
 local function fraction_to_beats(str)
   local num, den= string.match(str,"^(%d+)%/(%d+)$")
   if num and den then
@@ -335,17 +335,6 @@ local function fraction_to_beats(str)
     return 1
   end
   return 1
-end
-
-local function generate_random_rhythm(chord_size, voice_idx)
-  local rate_str= RATE_OPTIONS[ params:get(voice_idx.."rate") ]
-  local base_beat= fraction_to_beats(rate_str)
-  local durations={}
-  for i=1, chord_size do
-    local factor= random_float(0.7,1.3)
-    durations[i]= factor*base_beat
-  end
-  return durations
 end
 
 local function run_arpeggio(voice_idx)
@@ -359,22 +348,13 @@ local function run_arpeggio(voice_idx)
 
   local locked= (params:get(voice_idx.."lock_arpeggio")==2)
   local direction
-  local durations
-
   if locked then
-    -- reuse locked data
-    direction  = v.locked_dir
-    durations  = v.locked_durations
+    direction= v.locked_dir
   else
-    -- fresh direction & durations
-    direction  = pick_random_direction()
-    durations  = generate_random_rhythm(csize, voice_idx)
-
-    -- store them for future lock
-    v.locked_chord     = chord
-    v.locked_dir       = direction
-    v.locked_durations = durations
-    v.locked_root      = v.midi_note
+    direction= pick_random_direction()
+    v.locked_chord = chord
+    v.locked_dir   = direction
+    v.locked_root  = v.midi_note
   end
 
   engine.gate(voice_idx,1)
@@ -394,9 +374,9 @@ local function run_arpeggio(voice_idx)
       note= chord[i]
     end
 
+    -- load sample
     if is_first then
       if base_path~="" then
-        -- crossfade load even for first chord tone
         safe_sample_load(voice_idx, base_path)
       end
       is_first=false
@@ -413,13 +393,16 @@ local function run_arpeggio(voice_idx)
       end
     end
 
+    -- random grains?
     if params:get(voice_idx.."rnd_grains")==2 then
       randomize_voice_grains(voice_idx)
     end
 
+    -- set pitch
     local ratio= math.pow(2,(note-60)/12)
     engine.pitch(voice_idx, ratio)
 
+    -- random velocity?
     if params:get(voice_idx.."rnd_velocity")==2 then
       local vmin= params:get(voice_idx.."min_rnd_vel")
       local vmax= params:get(voice_idx.."max_rnd_vel")
@@ -430,8 +413,15 @@ local function run_arpeggio(voice_idx)
       engine.volume(voice_idx, math.pow(10, vol_db/20))
     end
 
-    clock.sleep(durations[i]* clock.get_beat_sec())
+    -- NOW the key difference: Re-check the Rate param each chord tone
+    local rate_str= RATE_OPTIONS[ params:get(voice_idx.."rate") ]
+    local base_beat= fraction_to_beats(rate_str)
+    -- add a random factor
+    local factor= random_float(0.7,1.3)
+    local step_beats= factor * base_beat
+    clock.sleep(step_beats* clock.get_beat_sec())
 
+    -- direction stepping
     if direction=="up" then
       i= i+1
       if i>csize then i=1 end
@@ -439,13 +429,13 @@ local function run_arpeggio(voice_idx)
       i= i-1
       if i<1 then i=csize end
     elseif direction=="pingpong" then
-      i= i+dirsign
+      i= i+ dirsign
       if i>csize then
         i= csize-1
-        dirsign=-1
+        dirsign= -1
       elseif i<1 then
         i= 2
-        dirsign=1
+        dirsign= 1
       end
     end
   end
@@ -468,7 +458,7 @@ local function midi_event(data)
           local locked= (params:get(i.."lock_arpeggio")==2)
 
           if locked then
-            -- re-trigger last chord shape, transposed
+            -- re-trigger last shape, transposed
             if v.arp_clock then
               clock.cancel(v.arp_clock)
               v.arp_clock= nil
@@ -476,9 +466,9 @@ local function midi_event(data)
             v.active= true
             v.notes_held[msg.note]= true
 
+            -- If there's a locked chord+root, transpose it
             if #v.locked_chord>0 and v.locked_root then
-              -- scale-based transpose from locked_root to msg.note
-              local transposed = scale_transpose(v.locked_chord, v.locked_root, msg.note)
+              local transposed= scale_transpose(v.locked_chord, v.locked_root, msg.note)
               v.chord_tones= transposed
             else
               v.chord_tones= {}
@@ -514,7 +504,7 @@ local function midi_event(data)
           v.notes_held[msg.note]= nil
           local count=0
           for _,val in pairs(v.notes_held) do
-            if val then count=count+1 end
+            if val then count= count+1 end
           end
           if count==0 then
             v.active= false
@@ -529,7 +519,7 @@ local function midi_event(data)
         v.notes_held[msg.note]= nil
         local count=0
         for _,val in pairs(v.notes_held) do
-          if val then count=count+1 end
+          if val then count= count+1 end
         end
         if count==0 then
           v.active= false
@@ -540,7 +530,7 @@ local function midi_event(data)
 end
 
 -------------------------
--- UI
+-- Norns UI
 -------------------------
 function key(n,z)
   if n==2 and z==1 then
@@ -549,7 +539,7 @@ function key(n,z)
 end
 
 function enc(n,d)
-  -- none
+  -- no custom enc behavior
 end
 
 -------------------------
@@ -558,7 +548,7 @@ end
 local ui_metro
 function redraw()
   screen.clear()
-  for i=1, NUM_VOICES do
+  for i=1,NUM_VOICES do
     local pos= positions[i]
     screen.level(15)
     screen.rect(pos.x,pos.y,SQUARE_SIZE,SQUARE_SIZE)
@@ -588,15 +578,16 @@ local function add_voice_params(i)
   params:add_file(i.."base_sample","Base Sample (V"..i..")","")
   params:set_action(i.."base_sample",function(file)
     if file~="" then
-      -- optional immediate load?
       engine.read(i,file)
     end
   end)
 
   params:add_option(i.."rnd_sample","Randomize Sample (V"..i..")",{"No","Yes"},1)
 
-  params:add_option(i.."rate","Rate (V"..i..")", RATE_OPTIONS,5)
+  -- Rate: read each chord tone => real-time changes
+  params:add_option(i.."rate","Rate (V"..i..")",RATE_OPTIONS,5)
 
+  -- Lock Arpeggio
   params:add_option(i.."lock_arpeggio","Lock Arpeggio (V"..i..")",{"No","Yes"},1)
 
   params:add_number(i.."num_notes","Number of notes (V"..i..")",1,5,3)
@@ -653,15 +644,21 @@ local function add_voice_params(i)
 
   -- random seek
   params:add_option(i.."rnd_seek","Randomize seek (V"..i..")",{"No","Yes"},1)
-  params:set_action(i.."rnd_seek",function() update_random_seek(i) end)
+  params:set_action(i.."rnd_seek",function()
+    update_random_seek(i)
+  end)
 
   params:add_control(i.."rnd_seek_min","Rnd seek min (ms) (V"..i..")",
     controlspec.new(1,5000,"lin",1,500,"ms"))
-  params:set_action(i.."rnd_seek_min",function() update_random_seek(i) end)
+  params:set_action(i.."rnd_seek_min",function()
+    update_random_seek(i)
+  end)
 
   params:add_control(i.."rnd_seek_max","Rnd seek max (ms) (V"..i..")",
     controlspec.new(1,5000,"lin",1,1500,"ms"))
-  params:set_action(i.."rnd_seek_max",function() update_random_seek(i) end)
+  params:set_action(i.."rnd_seek_max",function()
+    update_random_seek(i)
+  end)
 end
 
 function init_params()
@@ -745,8 +742,7 @@ function init()
     random_seek_metros[i]= nil
   end
 
-  local dev= params:get("midi_device")
-  midi_in= midi.connect(dev)
+  midi_in= midi.connect(params:get("midi_device"))
   midi_in.event= midi_event
 
   start_redraw_clock()
