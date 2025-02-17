@@ -75,6 +75,14 @@ local function random_int(low,high)
   return math.floor(random_float(low, high+1))
 end
 
+local function generate_rhythm_pattern(num_steps)
+  local pattern = {}
+  for i = 1, num_steps do
+    pattern[i] = (math.random() > 0.5) -- 50% probability of a step being active
+  end
+  return pattern
+end
+
 -------------------------
 -- SAMPLE DIRECTORY
 -------------------------
@@ -365,6 +373,9 @@ local function run_arpeggio(voice_idx)
   local is_first= true
   local i=1
   local dirsign=1
+  
+  local rhythm_steps = generate_rhythm_pattern(16) -- Generates a 16-step rhythm pattern
+step_index = voices[voice_idx].step_index or 1
 
   while v.active do
     local note
@@ -424,9 +435,11 @@ end
     local rate_str= RATE_OPTIONS[ params:get(voice_idx.."rate") ]
     local base_beat= fraction_to_beats(rate_str)
     -- add a random factor
-    local factor= random_float(0.7,1.3)
-    local step_beats= factor * base_beat
-    clock.sleep(step_beats* clock.get_beat_sec())
+    local step_beats= base_beat
+    repeat
+  step_index = (step_index % 16) + 1
+until rhythm_steps[step_index]
+clock.sleep(step_beats * clock.get_beat_sec())
 
     -- direction stepping
     if direction=="up" then
@@ -499,6 +512,9 @@ local function midi_event(data)
             v.active= true
             v.midi_note= msg.note
             v.notes_held[msg.note]= true
+            
+            voices[i].rhythm_pattern = generate_rhythm_pattern(16) -- New rhythm pattern on note trigger
+voices[i].step_index = 1
 
             local chord= generate_chord(i, msg.note)
             v.chord_tones= chord
